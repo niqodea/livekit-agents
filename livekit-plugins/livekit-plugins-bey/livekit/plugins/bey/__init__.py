@@ -18,11 +18,23 @@ See https://docs.livekit.io/agents/integrations/avatar/bey/ for more information
 """
 
 from .avatar import AvatarSession, BeyException
+from .emotion import (
+    Emotion,
+    EmotionIntensity,
+    emotion_instructions,
+    emotion_tts_node,
+    with_emotion,
+)
 from .version import __version__
 
 __all__ = [
     "BeyException",
     "AvatarSession",
+    "Emotion",
+    "EmotionIntensity",
+    "emotion_instructions",
+    "emotion_tts_node",
+    "with_emotion",
     "__version__",
 ]
 

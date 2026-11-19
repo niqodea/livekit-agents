@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import aiohttp
 
@@ -18,17 +19,22 @@ from livekit.agents import (
     utils,
 )
 from livekit.agents.voice.avatar import AvatarSession as BaseAvatarSession, DataStreamAudioOutput
+from livekit.agents.voice.avatar._datastream_io import AUDIO_STREAM_TOPIC
+from livekit.agents.voice.io import AudioOutput
 from livekit.agents.voice.room_io import ATTRIBUTE_PUBLISH_ON_BEHALF
 
+from .emotion import get_emotion
 from .log import logger
 
 EGE_STOCK_AVATAR_ID = "b9be11b8-89fb-4227-8f86-4a881393cbdb"
 _DEFAULT_API_URL = "https://api.bey.dev"
-# The avatar worker renders and publishes 16 kHz audio
-SAMPLE_RATE = 16000
 
 _AVATAR_AGENT_IDENTITY = "bey-avatar-agent"
 _AVATAR_AGENT_NAME = "bey-avatar-agent"
+
+# The avatar worker reads a segment's emotion from this attribute of its audio stream,
+# as "<emotion>:<intensity>"
+_EMOTION_ATTRIBUTE = "bey.emotion"
 
 
 class BeyException(Exception):
@@ -114,11 +120,13 @@ class AvatarSession(BaseAvatarSession):
         await self._start_agent(livekit_url, livekit_token)
 
         agent_session.output.replace_audio_tail(
-            DataStreamAudioOutput(
+            _EmotionAudioOutput(
                 room=room,
                 destination_identity=self._avatar_participant_identity,
                 wait_remote_track=rtc.TrackKind.KIND_VIDEO,
-                sample_rate=SAMPLE_RATE,
+                # No sample rate, which would have LiveKit resample the audio into new
+                # frames without the emotion `with_emotion` attached; the avatar worker
+                # resamples it itself
             ),
         )
 
@@ -170,3 +178,50 @@ class AvatarSession(BaseAvatarSession):
                 await asyncio.sleep(self._conn_options.retry_interval)
 
         raise APIConnectionError("Failed to start Bey Avatar Session after all retries")
+
+
+class _EmotionAudioOutput(DataStreamAudioOutput):
+    """The audio output to the avatar, which tells it the emotion `with_emotion` attached
+    to each reply's audio."""
+
+    async def capture_frame(self, frame: rtc.AudioFrame) -> None:
+        """`DataStreamAudioOutput.capture_frame`, with the reply's emotion on its stream.
+
+        LiveKit has no hook for a stream's attributes, so this copies the method from
+        livekit-agents 1.8.13, as Keyframe's plugin does, and has to follow its changes.
+        """
+        if self._start_atask is None:
+            self._start_atask = asyncio.create_task(self._start_task())
+        await asyncio.shield(self._start_atask)
+
+        while self._clear_buffer_atask is not None and not self._clear_buffer_atask.done():
+            try:
+                await asyncio.shield(self._clear_buffer_atask)
+            except asyncio.CancelledError:
+                task = asyncio.create_task(self._finish_cancelled_capture(self._clear_buffer_atask))
+                self._clear_buffer_atask = task
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+                raise
+
+        await AudioOutput.capture_frame(self, frame)
+
+        if not self._stream_writer:
+            attributes = {
+                "sample_rate": str(frame.sample_rate),
+                "num_channels": str(frame.num_channels),
+            }
+            if (emotion := get_emotion(frame)) is not None:
+                attributes[_EMOTION_ATTRIBUTE] = emotion
+            self._stream_writer = await self._room.local_participant.stream_bytes(
+                name=utils.shortuuid("AUDIO_"),
+                topic=AUDIO_STREAM_TOPIC,
+                destination_identities=[self._destination_identity],
+                attributes=attributes,
+            )
+            self._pushed_duration = 0.0
+            if not self._wait_playback_start:
+                self.on_playback_started(created_at=time.time())
+
+        await self._stream_writer.write(bytes(frame.data))
+        self._pushed_duration += frame.duration
