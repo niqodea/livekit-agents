@@ -14,8 +14,9 @@ from livekit import rtc
 from livekit.agents import Agent, ModelSettings
 from livekit.agents.tts._provider_format import ExpressiveTag, TranscriptMarkupStripper
 
-Emotion = Literal["happy", "sad"]
-"""An emotion the avatar can speak with. Emotions show on Genesis 3 avatars only."""
+Emotion = Literal["neutral", "happy", "sad"]
+"""An emotion the avatar can speak with. Emotions show on Genesis 3 avatars only; neutral
+keeps the avatar's usual face."""
 
 EmotionIntensity = Literal["low", "medium", "high"]
 """How strongly the avatar shows an emotion."""
@@ -40,7 +41,7 @@ def with_emotion(
 
     Args:
         audio: The reply's audio.
-        emotion: The emotion to speak it with; None for the avatar's neutral face.
+        emotion: The emotion to speak it with; neutral or None for the avatar's usual face.
         intensity: How strongly to show it.
 
     Raises:
@@ -52,7 +53,7 @@ def with_emotion(
         raise ValueError(f"Unsupported emotion: {emotion!r}")
     if intensity not in get_args(EmotionIntensity):
         raise ValueError(f"Unsupported emotion intensity: {intensity!r}")
-    if emotion is None:
+    if emotion is None or emotion == "neutral":
         return audio
     return _mark(audio, f"{emotion}:{intensity}")
 
@@ -68,9 +69,9 @@ def emotion_instructions() -> str:
     return (
         "Your face is animated from your expression markers. Start every reply with one "
         '<expr type="expression" label="..."/> marker for the expression you say it with. '
-        f"The face shows only these expressions: {names}. Use calm for most replies, and "
-        "another expression only in moments that truly warrant it. A marker with any other "
-        "label leaves the face neutral."
+        f"The face shows only these expressions: {names}. Use neutral for most replies, and "
+        "another expression only in moments that truly warrant it. Use only those names as "
+        "expression labels; a marker with any other label leaves the face neutral."
     )
 
 

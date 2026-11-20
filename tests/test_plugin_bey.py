@@ -121,10 +121,11 @@ async def test_with_emotion_marks_every_frame_of_the_reply():
     assert [f.userdata["bey.emotion"] for f in frames] == ["sad:high", "sad:high"]
 
 
-async def test_with_no_emotion_leaves_the_reply_neutral():
+@pytest.mark.parametrize("emotion", [None, "neutral"])
+async def test_with_no_emotion_leaves_the_reply_neutral(emotion: str | None):
     from livekit.plugins import bey
 
-    frames = [f async for f in bey.with_emotion(_frames(), None)]
+    frames = [f async for f in bey.with_emotion(_frames(), emotion)]
 
     assert all("bey.emotion" not in f.userdata for f in frames)
 
@@ -215,6 +216,7 @@ _HAPPY = '<expr type="expression" label="happy"/>'
     [
         ([_HAPPY[:20], _HAPPY[20:] + " That's ", "great!"], "That's great!", "happy:medium"),
         (['<expr type="expression" label="sad and quiet"/> Oh no.'], "Oh no.", "sad:medium"),
+        (['<expr type="expression" label="neutral"/> Sure.'], "Sure.", None),
         (['<expr type="expression" label="calm"/> Sure.'], "Sure.", None),
         (["Sure, ", "let me check."], "Sure, let me check.", None),
         (["Hi! ", _HAPPY, " Great."], "Hi! Great.", None),

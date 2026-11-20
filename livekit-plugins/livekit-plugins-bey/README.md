@@ -20,7 +20,7 @@ export BEY_API_KEY=<your-bey-api-key>
 
 ## Emotions
 
-Genesis 3 avatars can speak each reply with an emotion: `happy` or `sad` (`bey.Emotion`). Other avatars ignore it.
+Genesis 3 avatars can speak each reply with an emotion: `happy` or `sad`, or `neutral` for their usual face (`bey.Emotion`). Other avatars ignore it.
 The emotion holds for the whole reply and the avatar is neutral again on the next one, so the face never changes mid-sentence.
 
 ### Let the LLM choose
@@ -60,7 +60,7 @@ class MyAgent(Agent):
     emotion: bey.Emotion | None = None
 
     async def on_user_turn_completed(self, turn_ctx, new_message):
-        self.emotion = await my_classifier(new_message.text_content)  # "happy", "sad" or None
+        self.emotion = await my_classifier(new_message.text_content)  # "neutral", "happy" or "sad"
 
     def realtime_audio_output_node(self, audio, model_settings):
         return bey.with_emotion(audio, self.emotion)
