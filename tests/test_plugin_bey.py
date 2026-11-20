@@ -169,6 +169,37 @@ async def test_each_reply_stream_carries_its_emotion(
     assert output.sample_rate is None
 
 
+async def test_reply_audio_reaches_the_avatar_whole_at_16_khz(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from livekit.agents import utils
+    from livekit.plugins.bey.avatar import _EmotionAudioOutput
+
+    room = MagicMock()
+    room.isconnected.return_value = True
+    room.local_participant._rpc_handlers = {}
+    writer = AsyncMock()
+    room.local_participant.stream_bytes = AsyncMock(return_value=writer)
+    monkeypatch.setattr(utils, "wait_for_participant", AsyncMock())
+    output = _EmotionAudioOutput(room, destination_identity="bey-avatar-agent")
+    await output._start_task()
+
+    async def forward() -> None:
+        # 50 ms at 24 kHz, of which the resampler holds the last samples until the flush
+        async for frame in _frames(5):
+            await output.capture_frame(frame)
+        output.flush()
+
+    await asyncio.create_task(forward())
+    await asyncio.gather(*output._tasks)
+
+    attributes = room.local_participant.stream_bytes.await_args.kwargs["attributes"]
+    assert attributes["sample_rate"] == "16000"
+    written = b"".join(call.args[0] for call in writer.write.await_args_list)
+    assert len(written) // 2 == 800
+    writer.aclose.assert_awaited_once()
+
+
 def _agent(*, expressive: bool) -> MagicMock:
     agent = MagicMock()
     activity = agent._get_activity_or_raise.return_value

@@ -28,6 +28,8 @@ from .log import logger
 
 EGE_STOCK_AVATAR_ID = "b9be11b8-89fb-4227-8f86-4a881393cbdb"
 _DEFAULT_API_URL = "https://api.bey.dev"
+# The avatar worker renders and publishes 16 kHz audio
+SAMPLE_RATE = 16000
 
 _AVATAR_AGENT_IDENTITY = "bey-avatar-agent"
 _AVATAR_AGENT_NAME = "bey-avatar-agent"
@@ -124,9 +126,9 @@ class AvatarSession(BaseAvatarSession):
                 room=room,
                 destination_identity=self._avatar_participant_identity,
                 wait_remote_track=rtc.TrackKind.KIND_VIDEO,
-                # No sample rate, which would have LiveKit resample the audio into new
-                # frames without the emotion `with_emotion` attached; the avatar worker
-                # resamples it itself
+                # No sample rate: LiveKit would resample the audio into new frames
+                # without the emotion `with_emotion` attached, so the output resamples
+                # it to SAMPLE_RATE itself, as Keyframe's plugin does
             ),
         )
 
@@ -182,7 +184,10 @@ class AvatarSession(BaseAvatarSession):
 
 class _EmotionAudioOutput(DataStreamAudioOutput):
     """The audio output to the avatar, which tells it the emotion `with_emotion` attached
-    to each reply's audio."""
+    to each reply's audio, and sends the audio at SAMPLE_RATE."""
+
+    # The reply's resampler, which holds back the last samples it read until flushed
+    _resampler: rtc.AudioResampler | None = None
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         """`DataStreamAudioOutput.capture_frame`, with the reply's emotion on its stream.
@@ -208,7 +213,7 @@ class _EmotionAudioOutput(DataStreamAudioOutput):
 
         if not self._stream_writer:
             attributes = {
-                "sample_rate": str(frame.sample_rate),
+                "sample_rate": str(SAMPLE_RATE),
                 "num_channels": str(frame.num_channels),
             }
             if (emotion := get_emotion(frame)) is not None:
@@ -223,5 +228,45 @@ class _EmotionAudioOutput(DataStreamAudioOutput):
             if not self._wait_playback_start:
                 self.on_playback_started(created_at=time.time())
 
-        await self._stream_writer.write(bytes(frame.data))
-        self._pushed_duration += frame.duration
+        for resampled in self._resample(frame):
+            await self._stream_writer.write(bytes(resampled.data))
+            self._pushed_duration += resampled.duration
+
+    def flush(self) -> None:
+        """`DataStreamAudioOutput.flush`, after the reply's last samples the resampler
+        still holds."""
+        resampler, self._resampler = self._resampler, None
+        tail = resampler.flush() if resampler is not None else []
+        writer = self._stream_writer
+        if not tail or writer is None or not self._started:
+            super().flush()
+            return
+
+        AudioOutput.flush(self)
+        self._pushed_duration += sum(f.duration for f in tail)
+        self._stream_writer = None
+        task = asyncio.create_task(_close_stream(writer, tail))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def clear_buffer(self) -> None:
+        # The interrupted reply's last samples are not played
+        self._resampler = None
+        super().clear_buffer()
+
+    def _resample(self, frame: rtc.AudioFrame) -> list[rtc.AudioFrame]:
+        if frame.sample_rate == SAMPLE_RATE:
+            return [frame]
+        if self._resampler is None:
+            self._resampler = rtc.AudioResampler(
+                input_rate=frame.sample_rate,
+                output_rate=SAMPLE_RATE,
+                num_channels=frame.num_channels,
+            )
+        return self._resampler.push(frame)
+
+
+async def _close_stream(writer: rtc.ByteStreamWriter, tail: list[rtc.AudioFrame]) -> None:
+    for frame in tail:
+        await writer.write(bytes(frame.data))
+    await writer.aclose()
